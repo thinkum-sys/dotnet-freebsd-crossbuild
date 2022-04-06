@@ -8,7 +8,7 @@
 set -e
 
 if [ -z "${BMAKE}" ]; then
-    case $(uname -o) in
+    case $(uname -s) in
         FreeBSD)
             BMAKE=make
             ;;
