@@ -36,9 +36,9 @@
 ##   platforms
 ##
 ## - Tools that should be avaialble in the calling environment:
-##   jq; git; patch; sed; tar; gzip; wget; dotnet
+##   bash; jq; git; patch; sed; tar; gzip; wget; dotnet
 ##
-## - When calling ../entrypoint.sh, bmake should be available.
+## - When calling ../entrypoint_local.sh, bmake should be available.
 ##
 ##   On FreeBSD hosts, bmake would be used as make(1)
 ##
