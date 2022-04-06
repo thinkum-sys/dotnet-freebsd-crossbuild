@@ -14,7 +14,7 @@
 ##   If provided, this value should denote an HTTP proxy for use
 ##   by NuGet and wget.
 ##
-## - BUILER_ROOT (default for the docker environment: /builder)
+## - BUILDER_ROOT (default for the docker environment: /builder)
 ##   If called from ../entrypoint_local.sh this variable will be
 ##   set to the directory of the work tree containing this source
 ##   file
@@ -23,12 +23,12 @@
 ##   This directory will be used during pre-fetch and installation
 ##   for a .NET SDK bundle for each repository.
 ##
-##  - RUNTIME_ROOT, ASPNETC_ROOT, INSTALLER_ROOT
-##    Defaults for the Docker environment: /runtime, /aspnetcore, /installer
+## - RUNTIME_ROOT, ASPNETC_ROOT, INSTALLER_ROOT
+##   Defaults for the Docker environment: /runtime, /aspnetcore, /installer
 ##
-##    If called from ../entrypoint_local.sh these will each be set
-##    to a corresponding subdirectory within a 'build' subdir of this
-##    source tree.
+##   If called from ../entrypoint_local.sh these will each be set
+##   to a corresponding subdirectory within a 'build' subdir of this
+##   source tree.
 ##
 ## Assumptions in entrypoint.sh:
 ##
