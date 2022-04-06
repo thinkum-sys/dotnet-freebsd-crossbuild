@@ -219,28 +219,18 @@ fetch_dotnet() {
 
 patch_tree() {
     ## using GNU patch, with a backup file option
-    ## TBD creating an update_patches function for local
+    ## TBD creating an update_patches function for local builds
     local DST="$1"; shift
     local PATCH="$1"; shift
     local HERE="${PWD}"
     cd "${DST}"
-    ## FIXME for builds outside of docker, provide an option
-    ## for this script to backup and delete any ignored and
-    ## untracked files in some archive under CACHEDIR named
-    ## per each repository, head changeset and build time,
-    ## independent of the stash for any tracked files
-    ##
-    ## optionally, to include untracked (not ignored) files
-    ## in the stash - this would include the .dotnet contents
-    ##
-    ## optionally, to discard untracked and ignored files
-    ## and changes to tracked files, without stash
     git stash push -m "changes before ${BUILD_ID}" || true
     patch -p1 --backup --suffix=.orig --batch < ${PATCH}
     cd "${HERE}"
 }
 
 patch_nuget() {
+    ## from ../build.sh
     local DST="$1"; shift
     sed -i.bak '/\/dnceng\/internal\//d' ${DST}/NuGet.config
 }
@@ -262,11 +252,8 @@ fi
 
 
 if [ -n "${GITHUB_REF}" ]; then
-    ## a tag or a branch reference is available
-    ## for git clone of the builder repository
-    ##
     ## provided in the GitHub Workflow environment,
-    ## when a reference is avaialble
+    ## when a reference is avaialble for this repository
     BUILDER_REF="--branch ${GITHUB_REF}"
 fi
 
@@ -280,6 +267,7 @@ else
 fi
 
 if [ -n "${GITHUB_SHA}" ]; then
+    ## Docker environment
     ## if GITHUB_SHA is defined, use this as a head changeset for patches
     HERE=${PWD}
     cd ${BUILDER_ROOT}
@@ -305,6 +293,7 @@ update_tree ${INSTALLER_ROOT} ${TAG_INSTALLER} \
 patch_tree ${INSTALLER_ROOT} ${BUILDER_ROOT}/patches/patch_installerRTM.patch
 patch_nuget ${INSTALLER_ROOT}
 
+## fetch and install each dotnet SDK bundle
 fetch_dotnet "${RUNTIME_ROOT}"
 fetch_dotnet "${ASPNETC_ROOT}"
 
