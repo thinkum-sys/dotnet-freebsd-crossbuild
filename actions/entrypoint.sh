@@ -111,7 +111,7 @@
 ##   should be available for any stages of the build process that may be
 ##   produced in a FreeBSD environment.
 ##
-## - For calling this script from ../../entrypoint_local.sh, add any
+## - For calling this script from ../entrypoint_local.sh, add any
 ##   additional scripting for build dependencies under any single
 ##   Linux environment
 
