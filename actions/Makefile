@@ -33,6 +33,8 @@
 ##   https://github.com/dotnet/versions/tree/main/build-info/docker/image-info.dotnet-dotnet-buildtools-prereqs-docker-main.json
 ##
 
+.include ${.PARSEDIR}/../versions.mk
+
 ## GitHub repository for .NET versions information
 ## default: using https://github.com/dotnet/versions
 DOTNET_VERSIONS=	dotnet/versions
@@ -78,7 +80,7 @@ BINTOOLS_PORTS=	curl:ftp/curl \
 
 ## pre-build checks
 . for CMD ORGN in ${BINTOOLS_PORTS:S/:/ /}
-.  if !eixsts(${BINDIR}/${CMD})
+.  if !exists(${BINDIR}/${CMD})
 .   warn "Build tool not found: ${BINDIR}/${CMD} (available in port ${ORGN})"
 .  endif
 . endfor
@@ -91,6 +93,12 @@ PREFIX?=	/usr
 .endif
 
 ## internal variables
+
+.for V in RUNTIME ASPNETC INSTALLER
+SUB_LIST+=	%%TAG_${V}%%=${TAG_${V}}
+.endfor
+
+
 CLEANFILES=	${DOTNET_TOOLS_JSON:T} image.tag
 REALCLEANFILES=	 Dockerfile
 
@@ -106,8 +114,7 @@ image.tag: ${DOTNET_TOOLS_JSON:T}
 
 ## update the Dockerfile
 Dockerfile: image.tag dockerfile.in
-	TAG=$$(${CAT} image.tag); ${SED} "s@%%FROM%%@$${TAG}@" dockerfile.in | ${TEE} $@
-
+	TAG=$$(${CAT} image.tag); ${SED} -e "s@%%FROM%%@$${TAG}@" ${SUB_LIST} dockerfile.in | ${TEE} $@
 clean: .PHONY
 	rm -f ${CLEANFILES}
 
