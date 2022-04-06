@@ -43,7 +43,7 @@
 ##   On FreeBSD hosts, bmake would be used as make(1)
 ##
 ##   For any host system, BMAKE may be set in the environment for
-##   ../entrypoint_local.sh such as denote the path of usable bmake
+##   ../entrypoint_local.sh as to denote the path of usable bmake(1)
 ##   installation
 ##
 ##   This entrypoint.sh does not in itself call bmake(1)
