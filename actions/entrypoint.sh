@@ -235,7 +235,6 @@ fi
 ## common args for the build scripts
 COMMON_ARGS=(/p:OfficialBuildId="${BUILD_ID}" -c Release)
 if [ -n "${DEBUG_BUILD}" ]; then
-    ## FIXME seemingly unused by the internal dotnet scripting, here
     COMMON_ARGS+=(/fileLogger)
     COMMON_ARGS+=(/fileLoggerParameters:Verbosity=diag)
     COMMON_ARGS+=(/fileLoggerParameters:LogFile=build.log)
@@ -426,7 +425,6 @@ fi
 update_tree ${RUNTIME_ROOT} ${TAG_RUNTIME} \
             ${GITHUB_SERVER_URL}/dotnet/runtime.git
 patch_tree ${RUNTIME_ROOT} ${BUILDER_ROOT}/patches/patch_runtimeRTM.patch
-patch_tree ${RUNTIME_ROOT} ${BUILDER_ROOT}/patches/patch_runtimeTBD.patch
 patch_nuget ${RUNTIME_ROOT}
 
 ## clone and patch the dotnet AspNetCore repository
