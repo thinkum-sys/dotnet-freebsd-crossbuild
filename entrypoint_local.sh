@@ -31,16 +31,21 @@ get_tag() {
 : ${RUNTIME_ROOT:=${HERE}/build/runtime}
 : ${ASPNETC_ROOT:=${HERE}/build/aspnetcore}
 : ${INSTALLER_ROOT:=${HERE}/build/installer}
+: ${TMPDIR:=${HERE}/build/tmpdir}
 
 : ${TAG_RUNTIME:=$(get_tag RUNTIME)}
 : ${TAG_ASPNETC:=$(get_tag ASPNETC)}
 : ${TAG_INSTALLER:=$(get_tag INSTALLER)}
+
+: ${CROSS_RELEASE:=12.3-RELEASE}
+: ${ROOTFS_DIR:=${HERE}/build/cross}
 
 RUN_ENV=()
 RUN_ENV+=(BUILDER_ROOT="${HERE}")
 RUN_ENV+=(RUNTIME_ROOT="${RUNTIME_ROOT}")
 RUN_ENV+=(ASPNETC_ROOT="${ASPNETC_ROOT}")
 RUN_ENV+=(INSTALLER_ROOT="${INSTALLER_ROOT}")
+RUN_ENV+=(TMPDIR="${TMPDIR}")
 RUN_ENV+=(TAG_RUNTIME="${TAG_RUNTIME}")
 RUN_ENV+=(TAG_ASPNETC="${TAG_ASPNETC}")
 RUN_ENV+=(TAG_INSTALLER="${TAG_INSTALLER}")
@@ -54,5 +59,5 @@ if [ -n "${ALL_PROXY}" ]; then
     RUN_ENV+=(ftp_proxy="${ALL_PROXY}")
 fi
 
-exec env ${RUN_ENV[@]} DEBUG_BUILD=defined \
+exec env "${RUN_ENV[@]}" DEBUG_BUILD=defined \
      bash ${HERE}/actions/entrypoint.sh

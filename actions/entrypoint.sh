@@ -9,6 +9,11 @@
 ## entry point with a build environment for calling this
 ## shell script.
 ##
+## Depending on the depth of the git checkout for each dotnet repository,
+## the build may require more than 8 GiB of filesystem space on the
+## build host. In a rough estimate, the builder flesystem may require up
+## to 16 GiB of filesystem space.
+##
 ## Optional environment variables
 ## - ALL_PROXY (no default value)
 ##   If provided, this value should denote an HTTP proxy for use
@@ -35,8 +40,20 @@
 ## - The cross build will be produced for an x64 architecture, in .NET
 ##   platforms
 ##
-## - Tools that should be avaialble in the calling environment:
-##   bash; jq; git; patch; sed; tar; gzip; wget; dotnet
+## - Dependencies include:
+##
+##   build tools, in the host environment: bash; jq; git; patch; sed;
+##     awk; bsdtar; gzip; curl; dotnet; ninja; python; clang
+##
+##   On Linux: findutils; coreutils
+##
+##   FreeBSD pkgs (ports) for build dependencies under the cross rootfs:
+##    * libunwind	(devel/libunwind)
+##    * icu		(devel/libicu)
+##    * liburcu		(sysutils/liburcu)
+##    * lttng-ust	(sysutils/lttng-ust)
+##    * libinotify	(devel/libinotify)
+##    * one of: heimdal or krb5, for GSS-API support
 ##
 ## - When calling ../entrypoint_local.sh, bmake should be available.
 ##
@@ -100,6 +117,13 @@
 ##    be set from ../versions.mk (bmake)
 ##
 ## Known Limitations / TO DO
+##
+## - This script does not provide any cleanup or monitoring for
+##   files created under TMPDIR.
+##
+##   When called from ../entrypoint_local.sh, by default a local TMPDIR
+##   will be used under the builder directory, as <srcroot>/build/tmpdir
+##
 ## - Create a docker image for this entrypoint.sh in some Linux
 ##   environment.
 ##
@@ -119,6 +143,10 @@ set -e
 
 if [ -n "${DEBUG_BUILD}" ]; then
     set -x
+    ## The following environment variables will provide debugging output
+    ## from git. In side effects, these may be of some use for git fetch
+    ## over unreliable network links.
+    export GIT_TRACE_PACKET=1 GIT_TRACE=1 GIT_CURL_VERBOSE=1
 fi
 
 ## BUILDER_ROOT should indicate a pathname for the Git work tree
@@ -139,20 +167,79 @@ fi
 : ${ASPNETC_ROOT:=/aspnet}
 : ${INSTALLER_ROOT:=/installer}
 
+: ${TMPDIR:=/tmp}
+
+## ROOTFS_DIR will be used as CROSS_ROOTFS in the cmake section
+## when cross-building the dotnet/runtime source tree.
+##
+## This directory will be populated with a FreeBSD base system,
+## installed absent of special file attributes. This will be
+## installed for the FreeBSD release denoted in CROSS_RELEASE.
+##
+## The base.txz image for the release will be fetched from
+## CROSS_ORIGIN
+##
+## FIXME package files should be installed for CROSS_RELEASE
+## under the same ROOTFS_DIR
+: ${ROOTFS_DIR:=${BUILDER_ROOT}/build/cross}
+
 ## NuGet cache dir
 : ${CACHEDIR:=${BUILDER_ROOT}/cache}
 
 ## URL prefix for .NET SDK distributions
-## This URL should not have a trailing slash "/"
 : ${DOTNET_DISTSITE:=https://dotnetcli.azureedge.net/dotnet/Sdk}
 
 ## String for OfficialbuildID
-## This value has a specific syntax
-: ${BUILD_ID:=$(date "+%Y%m%d-%H")}
+##
+## This literal value has a specific syntax. The last three characters
+## should be of a format "-DD" but the second to last digit should
+## not be zero. Keeping with the syntax of ../build.sh, the suffix
+## '-99' is used. As a side effect, builds produced on the same day
+## in the current timezone will have the same build ID
+: ${BUILD_ID:=$(date "+%Y%m%d-99")}
 
 ## Base URL for GitHub repositories used in this script.
 ## normally provided by the GitHub Workflow environment
 : ${GITHUB_SERVER_URL:=https://github.com}
+
+## FreeBSD release and origin for the cross-rootfs base system
+##
+## FIXME CROSS_RELEASE should also be used for cross-rootfs pkg installation
+: ${CROSS_RELEASE:=12.3-RELEASE}
+: ${CROSS_ORIGIN:=http://ftp.freebsd.org/pub/FreeBSD/releases}
+
+
+## "clean build" flag; If a non-empty string, each dotnet source tree
+## will be cleaned before build. This value is set by default.
+##
+## As a side effect, in each dotnet source tree before patch:
+## - reset local changes
+## - remove untracked and ignored files
+##
+## NuGet packages will be cached external to each source tree
+##
+: ${CLEAN_BUILD:=defined}
+
+## Kerberos 5 version from FreeBSD ports for cross-rootfs
+##
+## Accepted values:
+##   heimdal => uses pkg for port security/heimdal
+##   mit => uses pkg for port security/krb5
+##
+## FIXME if producing build deps for dotnet suport under ports,
+## a separate build should be produced for each supported value here.
+## The corresponding krb5 port may then serve as a runtime dependency
+## for a port using the cross-build resources produced here.
+: ${CROSS_DEP_KRB5:=heimdal}
+
+## common args for the build scripts
+COMMON_ARGS=(/p:OfficialBuildId="${BUILD_ID}" -c Release)
+if [ -n "${DEBUG_BUILD}" ]; then
+    ## FIXME seemingly unused by the internal dotnet scripting, here
+    COMMON_ARGS+=(/fileLogger)
+    COMMON_ARGS+=(/fileLoggerParameters:Verbosity=diag)
+    COMMON_ARGS+=(/fileLoggerParameters:LogFile=build.log)
+fi
 
 
 msg() {
@@ -169,6 +256,20 @@ fail() {
     msg "entrypoint.sh: failed${exstr}: ${msg}"
     exit ${excode}
 }
+
+_git_st_rm() {
+    ## remove any untracked and ignored files in a Git repository,
+    ## with the list of files and dirs to remove provided by
+    ## git-status(1)
+    local TREE="$1"; shift
+    cd "${TREE}"
+    git status -uall --ignored=matching --short |
+        awk 'BEGIN { ORS="\0" } $1 == "??" || $1 == "!!" { print $2 }' |
+        xargs -0 rm -rf
+}
+
+## export for use in git-submodule(1)
+export -f _git_st_rm
 
 update_tree() {
     ## utility function for eval outside of docker
@@ -199,6 +300,14 @@ update_tree() {
             git submodule foreach --recursive \
                 'git submodule init; git submodule update'
         fi
+        if [ -n "${CLEAN_BUILD:-}" ]; then
+            msg "Cleaning ${TREE}"
+            _git_st_rm "${TREE}"
+            local FUNCS="$(export -fp)"
+            git submodule foreach "bash -c \"${FUNCS}; _git_st_rm \$toplevel\""
+            git reset --hard
+            git submodule foreach --recursive 'git reset --hard'
+        fi
     else
         git clone --depth 1 --tags $@
         git switch -c build/${TAG} ${TAG}
@@ -206,15 +315,35 @@ update_tree() {
     cd "${HERE}"
 }
 
+format_sdk_file() {
+    local VERS="$1"; shift
+    local RST="${1:-}"
+    printf 'dotnet-sdk-%s-linux-x64.tar.gz%s' "${VERS}" "${RST}"
+}
+
+format_sdk_url() {
+    local SITE="${1%/}"; shift
+    local VERS="$1"; shift
+    local RST="${1:-}"
+    local F=$(format_sdk_file "${VERS}" "${RST}")
+    printf '%s/%s/%s%s' "${SITE}" "${VERS}" "${F}"
+}
+
+
 fetch_dotnet() {
     local TREE="$1"; shift
     local VERS=$(jq '.sdk.version' ${TREE}/global.json | sed 's@"@@'g)
-    local F="dotnet-sdk-${VERS}-linux-x64.tar.gz"
-    if ! [ -e "${CACHEDIR}/${F}" ]; then
-        wget -O "${CACHEDIR}/${F}" -c ${WGET_ARGS} "${DOTNET_DISTSITE}/${VERS}/${F}"
+    local SDK=$(format_sdk_file "${VERS}")
+    local SDKWEB=$(format_sdk_url "${DOTNET_DISTSITE}" "${VERS}")
+
+    if ! [ -e "${CACHEDIR}/${SDK}" ]; then
+        curl -o "${CACHEDIR}/${SDK}" "${CURL_ARGS}" "${SDKWEB}"
     fi
+
+    gzip --test  "${CACHEDIR}/${SDK}" ||
+        fail "SDK archive failed check: ${CACHEDIR}/${SDK}" $?
     mkdir -p ${TREE}/.dotnet
-    tar -C ${TREE}/.dotnet -xzf "${CACHEDIR}/${F}"
+    bsdtar -C ${TREE}/.dotnet -xzf "${CACHEDIR}/${SDK}"
 }
 
 patch_tree() {
@@ -235,6 +364,32 @@ patch_nuget() {
     sed -i.bak '/\/dnceng\/internal\//d' ${DST}/NuGet.config
 }
 
+build_tree() {
+    local TREE="$1"; shift
+    local HERE="${PWD}"
+    cd "${TREE}"
+    env "${BUILDER_ENV[@]}" DOTNET_INSTALL_DIR=${TREE}/.dotnet \
+        DOTNET_ROOT=${TREE}/.dotnet ${TREE}/build.sh "${COMMON_ARGS[@]}" \
+        "$@" || fail "Build failed for ${TREE}" $?
+    cd "${HERE}"
+}
+
+
+## dependencies for cross-rootfs in dotnet/runtime
+CROSS_DEPS=(libunwind icu lttng-ust liburcu libinotify)
+case ${CROSS_DEP_KRB5} in
+    heimdal)
+        CROSS_DEPS+=heimdal
+        ;;
+    mit)
+        CROSS_DEPS+=krb5
+        ;;
+    *)
+        fail "Unkonwn CROSS_DEP_KRB5: ${CROSS_DEP_KRB5}"
+        ;;
+esac
+
+
 
 ## tags for automated git checkout/switch
 if [ -z "${TAG_RUNTIME:-}" ]; then
@@ -245,13 +400,7 @@ elif [ -z "${TAG_INSTALLER:-}" ]; then
     fail "TAG_INSTALLER not provided"
 fi
 
-if [ -z "${ROOTFS_DIR:-}" ]; then
-    ## TBD, outside of the docker image
-    export ROOTFS_DIR="/"
-fi
-
-
-if [ -n "${GITHUB_REF}" ]; then
+if [ -n "${GITHUB_REF:-}" ]; then
     ## provided in the GitHub Workflow environment,
     ## when a reference is avaialble for this repository
     BUILDER_REF="--branch ${GITHUB_REF}"
@@ -266,19 +415,18 @@ else
         ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git ${BUILDER_ROOT}
 fi
 
-if [ -n "${GITHUB_SHA}" ]; then
+if [ -n "${GITHUB_SHA:-}" ]; then
     ## Docker environment
     ## if GITHUB_SHA is defined, use this as a head changeset for patches
-    HERE=${PWD}
+    git checkout ${GITHUB_SHA} ${BUILDER_ROOT}
     cd ${BUILDER_ROOT}
-    git checkout ${GITHUB_SHA}
-    cd ${HERE}
 fi
 
 ## clone and patch the dotnet runtime repository
 update_tree ${RUNTIME_ROOT} ${TAG_RUNTIME} \
             ${GITHUB_SERVER_URL}/dotnet/runtime.git
 patch_tree ${RUNTIME_ROOT} ${BUILDER_ROOT}/patches/patch_runtimeRTM.patch
+patch_tree ${RUNTIME_ROOT} ${BUILDER_ROOT}/patches/patch_runtimeTBD.patch
 patch_nuget ${RUNTIME_ROOT}
 
 ## clone and patch the dotnet AspNetCore repository
@@ -293,12 +441,25 @@ update_tree ${INSTALLER_ROOT} ${TAG_INSTALLER} \
 patch_tree ${INSTALLER_ROOT} ${BUILDER_ROOT}/patches/patch_installerRTM.patch
 patch_nuget ${INSTALLER_ROOT}
 
+mkdir -p ${TMPDIR} ${ROOTFS_DIR} ${CACHEDIR}/nupkg
+
 ## fetch and install each dotnet SDK bundle
 fetch_dotnet "${RUNTIME_ROOT}"
 fetch_dotnet "${ASPNETC_ROOT}"
 
-mkdir -p ${CACHEDIR}/nupkg
-BUILDER_ENV=(NUGET_PACKAGES=${CACHEDIR}/nupkg)
+## fetch and install the cross rootfs
+if ! [ -e "${ROOTFS_DIR}/bin/freebsd-version" ]; then
+    ## FIXME no clean option here other than to remove ROOTFS_DIR
+    ## external to this script
+    msg "Fetching cross base system (${CROSS_RELEASE}) from ${CROSS_ORIGIN}"
+    wget -O "${CACHEDIR}/base.txz" -c ${WGET_ARGS} \
+         "${CROSS_ORIGIN}/amd64/${CROSS_RELEASE}/base.txz"
+    msg "Extracing cross base system (${CROSS_RELEASE}) to ${ROOTFS_DIR}"
+    bsdtar --no-fflags -C ${ROOTFS_DIR} -Jx -f ${CACHEDIR}/base.txz
+fi
+
+BUILDER_ENV=(ROOTFS_DIR="${ROOTFS_DIR}" TMPDIR="${TMPDIR}")
+BUILDER_ENV+=(NUGET_PACKAGES="${CACHEDIR}/nupkg")
 
 if [ -n "${ALL_PROXY}" ]; then
     ## proxy environment for curl
@@ -308,7 +469,6 @@ if [ -n "${ALL_PROXY}" ]; then
     BUILDER_ENV+=(https_proxy="${ALL_PROXY}")
     BUILDER_ENV+=(ftp_proxy="${ALL_PROXY}")
 fi
-
 
 ## enable retry in nuget
 ##
@@ -320,10 +480,8 @@ fi
 BUILDER_ENV+=(NUGET_ENABLE_ENHANCED_HTTP_RETRY=true)
 
 ## build the runtime repository
-env ${BUILDER_ENV[@]} DOTNET_ROOT=${RUNTIME_ROOT}/.dotnet \
-    ${RUNTIME_ROOT}/build.sh -c Release -cross -os freebsd \
-    /p:OfficialBuildId=${BUILD_ID} ||
-    fail "Build failed for ${RUNTIME_ROOT}" $?
+build_tree ${RUNTIME_ROOT} \
+           -ninja -cross -os freebsd
 
 ## see ../build.sh
 dotnet nuget add source ${RUNTIME_ROOT}/artifacts/packages/Release/Shipping \
@@ -334,10 +492,8 @@ cp -pv \
     ${ASPNETC_ROOT}/artifacts/obj/Microsoft.AspNetCore.App.Runtime
 
 ## build the AspNetCore repository
-env ${BUILDER_ENV[@]} DOTNET_ROOT=${ASPNETC_ROOT}/.dotnet \
-    ${ASPNETC_ROOT}/build.sh -c Release --os-name freebsd -pack \
-    /p:CrossgenOutput=false /p:OfficialBuildId=${BUILD_ID} ||
-    fail "Build failed for ${ASPNETC_ROOT}" $?
+build_tree ${ASPNETC_ROOT} \
+           --os-name freebsd -pack /p:CrossgenOutput=false
 
 ## see ../build.sh
 dotnet nuget remove source msbuild \
@@ -358,8 +514,9 @@ cp -pv \
     ${INSTALLER_ROOT}/artifacts/obj/redist/Release/downloads/
 
 ## build the installer repository
-env ${BUILDER_ENV[@]} INSTALLER_ROOT=${ASPNETC_ROOT}/.dotnet \
-    ${INSTALLER_ROOT}/build.sh -c Release -pack --runtime-id freebsd-x64 \
-    /p:OSName=freebsd /p:CrossgenOutput=false /p:OfficialBuildId=${BUILD_ID} \
-    /p:IncludeAspNetCoreRuntime=True /p:DISABLE_CROSSGEN=True ||
-    fail "Build failed for ${INSTALLER_ROOT}" $?
+build_tree "${INSTALLER_ROOT}" \
+           -pack --runtime-id freebsd-x64 \
+           /p:OSName=freebsd /p:CrossgenOutput=false \
+           /p:IncludeAspNetCoreRuntime=True /p:DISABLE_CROSSGEN=True
+
+## FIXME package the files for availability in some FreeBSD port build
